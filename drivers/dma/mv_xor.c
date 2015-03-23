@@ -23,6 +23,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/memory.h>
 #include <linux/clk.h>
@@ -33,6 +34,11 @@
 
 #include "dmaengine.h"
 #include "mv_xor.h"
+
+enum mv_xor_mode {
+	XOR_MODE_IN_REG,
+	XOR_MODE_IN_DESC,
+};
 
 static void mv_xor_issue_pending(struct dma_chan *chan);
 
@@ -58,6 +64,24 @@ static void mv_desc_init(struct mv_xor_desc_slot *desc,
 				XOR_DESC_EOD_INT_EN : 0;
 	hw_desc->phy_dest_addr = addr;
 	hw_desc->byte_count = byte_count;
+}
+
+static void mv_desc_set_mode(struct mv_xor_desc_slot *desc)
+{
+	struct mv_xor_desc *hw_desc = desc->hw_desc;
+
+	switch (desc->type) {
+	case DMA_XOR:
+	case DMA_INTERRUPT:
+		hw_desc->desc_command |= XOR_DESC_OPERATION_XOR;
+		break;
+	case DMA_MEMCPY:
+		hw_desc->desc_command |= XOR_DESC_OPERATION_MEMCPY;
+		break;
+	default:
+		BUG();
+		return;
+	}
 }
 
 static void mv_desc_set_next_desc(struct mv_xor_desc_slot *desc,
@@ -150,6 +174,19 @@ static void mv_set_mode(struct mv_xor_chan *chan,
 
 	writel_relaxed(config, XOR_CONFIG(chan));
 	chan->current_type = type;
+}
+
+static void mv_set_mode_on_desc(struct mv_xor_chan *chan)
+{
+	u32 op_mode;
+	u32 config = readl_relaxed(XOR_CONFIG(chan));
+
+	op_mode = XOR_OPERATION_MODE_IN_DESC;
+
+	config &= ~0x7;
+	config |= op_mode;
+
+	writel_relaxed(config, XOR_CONFIG(chan));
 }
 
 static void mv_chan_activate(struct mv_xor_chan *chan)
@@ -470,6 +507,8 @@ mv_xor_prep_dma_xor(struct dma_chan *chan, dma_addr_t dest, dma_addr_t *src,
 		sw_desc->type = DMA_XOR;
 		sw_desc->async_tx.flags = flags;
 		mv_desc_init(sw_desc, dest, len, flags);
+		if (mv_chan->op_in_desc == XOR_MODE_IN_DESC)
+			mv_desc_set_mode(sw_desc);
 		while (src_cnt--)
 			mv_desc_set_src_addr(sw_desc, src_cnt, src[src_cnt]);
 	}
@@ -924,7 +963,7 @@ static int mv_xor_channel_remove(struct mv_xor_chan *mv_chan)
 static struct mv_xor_chan *
 mv_xor_channel_add(struct mv_xor_device *xordev,
 		   struct platform_device *pdev,
-		   int idx, dma_cap_mask_t cap_mask, int irq)
+		   int idx, dma_cap_mask_t cap_mask, int irq, int op_in_desc)
 {
 	int ret = 0;
 	struct mv_xor_chan *mv_chan;
@@ -936,6 +975,7 @@ mv_xor_channel_add(struct mv_xor_device *xordev,
 
 	mv_chan->idx = idx;
 	mv_chan->irq = irq;
+	mv_chan->op_in_desc = op_in_desc;
 
 	dma_dev = &mv_chan->dmadev;
 
@@ -997,7 +1037,10 @@ mv_xor_channel_add(struct mv_xor_device *xordev,
 
 	mv_chan_unmask_interrupts(mv_chan);
 
-	mv_set_mode(mv_chan, DMA_XOR);
+	if (mv_chan->op_in_desc == XOR_MODE_IN_DESC)
+		mv_set_mode_on_desc(mv_chan);
+	else
+		mv_set_mode(mv_chan, DMA_XOR);
 
 	spin_lock_init(&mv_chan->lock);
 	INIT_LIST_HEAD(&mv_chan->chain);
@@ -1023,7 +1066,8 @@ mv_xor_channel_add(struct mv_xor_device *xordev,
 			goto err_free_irq;
 	}
 
-	dev_info(&pdev->dev, "Marvell XOR: ( %s%s%s)\n",
+	dev_info(&pdev->dev, "Marvell XOR (%s): ( %s%s%s)\n",
+		 mv_chan->op_in_desc ? "Descriptor Mode" : "Registers Mode",
 		 dma_has_cap(DMA_XOR, dma_dev->cap_mask) ? "xor " : "",
 		 dma_has_cap(DMA_MEMCPY, dma_dev->cap_mask) ? "cpy " : "",
 		 dma_has_cap(DMA_INTERRUPT, dma_dev->cap_mask) ? "intr " : "");
@@ -1072,6 +1116,15 @@ mv_xor_conf_mbus_windows(struct mv_xor_device *xordev,
 	writel(0, base + WINDOW_OVERRIDE_CTRL(1));
 }
 
+#ifdef CONFIG_OF
+static struct of_device_id mv_xor_dt_ids[] = {
+	{ .compatible = "marvell,orion-xor", .data = (void *)XOR_MODE_IN_REG },
+	{ .compatible = "marvell,a38x-xor", .data = (void *)XOR_MODE_IN_DESC },
+	{},
+};
+MODULE_DEVICE_TABLE(of, mv_xor_dt_ids);
+#endif
+
 static int mv_xor_probe(struct platform_device *pdev)
 {
 	const struct mbus_dram_target_info *dram;
@@ -1079,6 +1132,7 @@ static int mv_xor_probe(struct platform_device *pdev)
 	struct mv_xor_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	struct resource *res;
 	int i, ret;
+	int op_in_desc;
 
 	dev_notice(&pdev->dev, "Marvell shared XOR driver\n");
 
@@ -1123,11 +1177,14 @@ static int mv_xor_probe(struct platform_device *pdev)
 	if (pdev->dev.of_node) {
 		struct device_node *np;
 		int i = 0;
+		const struct of_device_id *of_id =
+			of_match_device(of_match_ptr(mv_xor_dt_ids), &pdev->dev);
 
 		for_each_child_of_node(pdev->dev.of_node, np) {
 			struct mv_xor_chan *chan;
 			dma_cap_mask_t cap_mask;
 			int irq;
+			op_in_desc = (int)of_id->data;
 
 			dma_cap_zero(cap_mask);
 			if (of_property_read_bool(np, "dmacap,memcpy"))
@@ -1144,7 +1201,7 @@ static int mv_xor_probe(struct platform_device *pdev)
 			}
 
 			chan = mv_xor_channel_add(xordev, pdev, i,
-						  cap_mask, irq);
+						  cap_mask, irq, op_in_desc);
 			if (IS_ERR(chan)) {
 				ret = PTR_ERR(chan);
 				irq_dispose_mapping(irq);
@@ -1173,7 +1230,7 @@ static int mv_xor_probe(struct platform_device *pdev)
 			}
 
 			chan = mv_xor_channel_add(xordev, pdev, i,
-						  cd->cap_mask, irq);
+						  cd->cap_mask, irq, XOR_MODE_IN_REG);
 			if (IS_ERR(chan)) {
 				ret = PTR_ERR(chan);
 				goto err_channel_add;
