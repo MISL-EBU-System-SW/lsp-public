@@ -310,8 +310,7 @@ static void mv_xor_slot_cleanup(struct mv_xor_chan *mv_chan)
 
 		cookie = mv_xor_run_tx_complete_actions(iter, mv_chan, cookie);
 
-		if (mv_xor_clean_slot(iter, mv_chan))
-			break;
+		mv_xor_clean_slot(iter, mv_chan);
 	}
 
 	if ((busy == 0) && !list_empty(&mv_chan->chain)) {
