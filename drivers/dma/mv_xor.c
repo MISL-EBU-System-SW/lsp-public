@@ -1372,14 +1372,6 @@ static int mv_xor_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_OF
-static struct of_device_id mv_xor_dt_ids[] = {
-       { .compatible = "marvell,orion-xor", },
-       {},
-};
-MODULE_DEVICE_TABLE(of, mv_xor_dt_ids);
-#endif
-
 static struct platform_driver mv_xor_driver = {
 	.probe		= mv_xor_probe,
 	.remove		= mv_xor_remove,
