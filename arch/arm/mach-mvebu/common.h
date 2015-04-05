@@ -17,6 +17,8 @@
 
 #include <linux/reboot.h>
 
+#define LSP_VERSION    "linux-3.18.7-2015_T2.0.initial"
+
 void mvebu_restart(enum reboot_mode mode, const char *cmd);
 int mvebu_cpu_reset_deassert(int cpu);
 void mvebu_pmsu_set_cpu_boot_addr(int hw_cpu, void *boot_addr);

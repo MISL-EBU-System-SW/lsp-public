@@ -129,6 +129,8 @@ static int armada_375_external_abort_wa(unsigned long addr, unsigned int fsr,
 
 static void __init mvebu_init_irq(void)
 {
+	pr_notice("\n  LSP version: %s\n\n", LSP_VERSION);
+
 	irqchip_init();
 	mvebu_scu_enable();
 	coherency_init();
