@@ -35,8 +35,10 @@
 #include <linux/platform_device.h>
 #include <linux/clk.h>
 #include <linux/of.h>
+#include <linux/of_gpio.h>
 #include <linux/platform_data/mv_usb.h>
 #include <asm/unaligned.h>
+#include <linux/gpio.h>
 #include <linux/mbus.h>
 
 #include "mv_udc.h"
@@ -1382,6 +1384,9 @@ static int mv_udc_start(struct usb_gadget *gadget,
 	udc->ep0_state = WAIT_FOR_SETUP;
 	udc->ep0_dir = EP_DIR_OUT;
 
+	if (gpio_is_valid(udc->vbus_pin))
+		enable_irq(gpio_to_irq(udc->vbus_pin));
+
 	spin_unlock_irqrestore(&udc->lock, flags);
 
 	if (udc->transceiver) {
@@ -1412,6 +1417,9 @@ static int mv_udc_stop(struct usb_gadget *gadget,
 	unsigned long flags;
 
 	udc = container_of(gadget, struct mv_udc, gadget);
+
+	if (gpio_is_valid(udc->vbus_pin))
+		disable_irq(gpio_to_irq(udc->vbus_pin));
 
 	spin_lock_irqsave(&udc->lock, flags);
 
@@ -2076,10 +2084,13 @@ static void mv_udc_vbus_work(struct work_struct *work)
 	unsigned int vbus;
 
 	udc = container_of(work, struct mv_udc, vbus_work);
-	if (!udc->pdata->vbus)
+	if (udc->pdata && udc->pdata->vbus)
+		vbus = udc->pdata->vbus->poll();
+	else if (gpio_is_valid(udc->vbus_pin))
+		vbus = gpio_get_value(udc->vbus_pin);
+	else
 		return;
 
-	vbus = udc->pdata->vbus->poll();
 	dev_info(&udc->dev->dev, "vbus is %d\n", vbus);
 
 	if (vbus == VBUS_HIGH)
@@ -2135,7 +2146,6 @@ static int mv_udc_probe(struct platform_device *pdev)
 	struct resource *capregs, *phyregs, *irq, *mbus;
 	size_t size;
 	struct clk *clk;
-	struct mv_usb_addon_irq	*vbus = NULL;
 	void __iomem *base;
 	const struct mbus_dram_target_info *dram;
 
@@ -2166,6 +2176,11 @@ static int mv_udc_probe(struct platform_device *pdev)
 			mv_udc_conf_mbus_windows(base, dram);
 		}
 
+		/* setup vbus gpio */
+		udc->vbus_pin = of_get_named_gpio(pdev->dev.of_node, "vbus-gpio", 0);
+		if (udc->vbus_pin < 0)
+			udc->vbus_pin = -ENODEV;
+
 	} else if (pdata) {
 		udc->pdata = pdev->dev.platform_data;
 		if (pdata->mode == MV_USB_MODE_OTG) {
@@ -2189,8 +2204,9 @@ static int mv_udc_probe(struct platform_device *pdev)
 			dev_err(&pdev->dev, "no phy I/O memory resource defined\n");
 			return -ENODEV;
 		}
-		if (pdata->vbus)
-			vbus = pdata->vbus;
+
+		/* platform registeration does uses the generic gpio subsystem */
+		udc->vbus_pin = -ENODEV;
 
 	} else {
 		dev_err(&pdev->dev, "missing platform_data or of_node\n");
@@ -2320,16 +2336,43 @@ static int mv_udc_probe(struct platform_device *pdev)
 	/* VBUS detect: we can disable/enable clock on demand.*/
 	if (udc->transceiver)
 		udc->clock_gating = 1;
-	else if (vbus) {
+	else if (pdata && pdata->vbus) {
 		udc->clock_gating = 1;
 		retval = devm_request_threaded_irq(&pdev->dev,
-				vbus->irq, NULL,
+				pdata->vbus->irq, NULL,
 				mv_udc_vbus_irq, IRQF_ONESHOT, "vbus", udc);
 		if (retval) {
 			dev_info(&pdev->dev,
 				"Can not request irq for VBUS, "
 				"disable clock gating\n");
 			udc->clock_gating = 0;
+		}
+
+		udc->qwork = create_singlethread_workqueue("mv_udc_queue");
+		if (!udc->qwork) {
+			dev_err(&pdev->dev, "cannot create workqueue\n");
+			retval = -ENOMEM;
+			goto err_destroy_dma;
+		}
+
+		INIT_WORK(&udc->vbus_work, mv_udc_vbus_work);
+	} else if (gpio_is_valid(udc->vbus_pin)) {
+		udc->clock_gating = 1;
+		if (!devm_gpio_request(&pdev->dev, udc->vbus_pin, "mv-udc")) {
+			retval = devm_request_irq(&pdev->dev,
+					       gpio_to_irq(udc->vbus_pin),
+					       mv_udc_vbus_irq, IRQ_TYPE_EDGE_BOTH,
+					       "mv-udc", udc);
+			if (retval) {
+				udc->vbus_pin = -ENODEV;
+				dev_warn(&pdev->dev,
+					 "failed to request vbus irq; "
+					 "assuming always on\n");
+			} else
+				disable_irq(gpio_to_irq(udc->vbus_pin));
+		} else {
+			/* gpio_request fail so use -EINVAL for gpio_is_valid */
+			udc->vbus_pin = -EINVAL;
 		}
 
 		udc->qwork = create_singlethread_workqueue("mv_udc_queue");
