@@ -109,11 +109,10 @@ static void msg_cleanup(void);
 
 static int msg_thread_exits(struct fsg_common *common)
 {
-	msg_cleanup();
 	return 0;
 }
 
-static int __init msg_do_config(struct usb_configuration *c)
+static int msg_do_config(struct usb_configuration *c)
 {
 	static const struct fsg_operations ops = {
 		.thread_exits = msg_thread_exits,
@@ -150,7 +149,7 @@ static struct usb_configuration msg_config_driver = {
 
 /****************************** Gadget Bind ******************************/
 
-static int __init msg_bind(struct usb_composite_dev *cdev)
+int msg_bind(struct usb_composite_dev *cdev)
 {
 	int status;
 
