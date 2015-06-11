@@ -194,6 +194,15 @@
 				status = "disabled";
 			};
 
+			u3d@50000 {
+				vbus-gpio = <&gpio1 19 GPIO_ACTIVE_HIGH>;
+				status = "disabled";
+			};
+
+			udc@54100 {
+				status = "disabled";
+			};
+
 			crypto@9D000 {
 				status = "okay";
 			};
@@ -219,6 +228,11 @@
 
 				xhci0_vbus_pins: xhci0-vbus-pins {
 					marvell,pins = "mpp44";
+					marvell,function = "gpio";
+				};
+
+				udc_vbus_pins: udc-vbus-pins {
+					marvell,pins = "mpp51";
 					marvell,function = "gpio";
 				};
 			};

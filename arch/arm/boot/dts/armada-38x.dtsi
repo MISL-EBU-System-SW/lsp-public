@@ -473,6 +473,20 @@
 				reg = <0x18420 0x74>,<0xc0000 0x10000>;
 			};
 
+			u3d@50000 {
+				compatible = "marvell,mvebu-u3d";
+				reg = <0x50000 0x2000>, <0x53000 0x50>, <0xa2f10 0x4>;
+				interrupts = <0 76 0x4>;
+				clocks = <&gateclk 11>;
+			};
+
+			udc@54100 {
+				compatible = "marvell,mv-udc";
+				reg = <0x54100 0x2000>;
+				interrupts = <0 76 0x4>;
+				clocks = <&gateclk 11>;
+			};
+
 			timer@20300 {
 				compatible = "marvell,armada-380-timer";
 				reg = <0x20300 0x30>, <0x21040 0x30>;
